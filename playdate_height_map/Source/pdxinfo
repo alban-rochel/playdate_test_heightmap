@@ -1,0 +1,5 @@
+name=HeightMap
+author=Alban Rochel
+description=Testing C API, testing height map rendering
+bundleID=com.rochel.height
+imagePath=
