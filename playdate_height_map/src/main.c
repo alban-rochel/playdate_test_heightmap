@@ -11,6 +11,15 @@
 
 #include "pd_api.h"
 
+#define FIXED_POINT_SHIFT 8
+#define fixed_t int32_t
+#define FLOAT_TO_FIXED(x) ((fixed_t)((x) * (1 << FIXED_POINT_SHIFT)))
+#define FIXED_TO_FLOAT(x) ((float)(x) / (1 << FIXED_POINT_SHIFT))
+#define INT32_TO_FIXED(x) ((fixed_t)((x) << FIXED_POINT_SHIFT))
+#define FIXED_TO_INT32(x) ((int32_t)(x) >> FIXED_POINT_SHIFT)
+#define FIXED_MUL(x, y) (((x) * (y)) >> FIXED_POINT_SHIFT)
+#define FIXED_DIV(x, y) (((x) << FIXED_POINT_SHIFT) / (y))
+
 #define LCD_COLUMNS 400
 #define LCD_ROWS 240
 #define LCD_STRIDE 52
@@ -18,6 +27,46 @@
 static int update(void* userdata);
 uint8_t* terrainData;
 uint8_t* heightPerColumn;
+
+#define LUT_SIZE 1024
+#define LUT_MASK 1023
+#define angle_t int32_t
+fixed_t cos_lut[LUT_SIZE];
+fixed_t sin_lut[LUT_SIZE];
+#define DEG_45 (LUT_SIZE/8)
+#define DEG_90 (LUT_SIZE/4)
+#define DEG_180 (LUT_SIZE/2)
+
+
+angle_t phi = DEG_45;
+const angle_t fov = DEG_90;
+const fixed_t vFov = fov*240/400;
+fixed_t posX = 0;
+fixed_t posY = 0;
+fixed_t posZ = INT32_TO_FIXED(200);
+const fixed_t horizon = INT32_TO_FIXED(120);
+const fixed_t scaleHeight = FLOAT_TO_FIXED(1.5f);
+const fixed_t distance = FLOAT_TO_FIXED(1024.f);
+const fixed_t speed = FLOAT_TO_FIXED(5.f);
+
+static fixed_t fixedCos(angle_t angle)
+{
+	return cos_lut[angle & LUT_MASK];
+}
+
+static fixed_t fixedSin(angle_t angle)
+{
+	return sin_lut[angle & LUT_MASK];
+}
+
+void initLut()
+{
+	for(int i = 0; i < LUT_SIZE; ++i)
+	{
+		cos_lut[i] = FLOAT_TO_FIXED(cos(i / (float)LUT_SIZE * 2.f * M_PI));
+		sin_lut[i] = FLOAT_TO_FIXED(sin(i / (float)LUT_SIZE * 2.f * M_PI));
+	}
+}
 
 void loadFile(PlaydateAPI* pd)
 {
@@ -50,6 +99,8 @@ int eventHandler(PlaydateAPI* pd, PDSystemEvent event, uint32_t arg)
 	if ( event == kEventInit )
 	{
 		//const char* err;
+
+		initLut();
 
 		heightPerColumn = pd->system->realloc(heightPerColumn, LCD_COLUMNS);
 
@@ -86,18 +137,6 @@ static inline uint32_t swap(uint32_t n)
 #endif
 }
 
-uint32_t frame = 0;
-
-float phi = 45.f/180.f * M_PI;
-float fov = 90.f / 180.f * M_PI;
-float vFov = 90.f / 180.f * M_PI * 240.f/400.f;
-float posX = 0.f;
-float posY = 0.f;
-float posZ = 200.f;
-float horizon = 120.f;
-float scaleHeight = 1.5f;
-float distance = 1024.f;
-float speed = 5.f;
 
 void checkButtons(PlaydateAPI* pd)
 {
@@ -107,38 +146,37 @@ void checkButtons(PlaydateAPI* pd)
 
 	if(current & kButtonUp)
 	{
-		posX += speed * cos(phi);
-		posY += speed * sin(phi);
+		posX += FIXED_MUL(speed, fixedCos(phi));
+		posY += FIXED_MUL(speed, fixedSin(phi));
 	}
 	if(current & kButtonDown)
 	{
-		posX -= speed * cos(phi);
-		posY -= speed * sin(phi);
+		posX -= FIXED_MUL(speed, fixedCos(phi));
+		posY -= FIXED_MUL(speed, fixedSin(phi));
 	}
 
 	if(current & kButtonLeft)
 	{
-		phi+=0.1f;
+			phi+=FLOAT_TO_FIXED(.1f);
 	}
-		if(current & kButtonRight)
+	if(current & kButtonRight)
 	{
-		phi-=0.1f;
+			phi-=FLOAT_TO_FIXED(.1f);
 	}
 
 	if(current & kButtonB)
 	{
-		posX += speed * cos(phi + M_PI/2);
-		posY += speed * sin(phi + M_PI/2);
+		posX += FIXED_MUL(speed, fixedCos(phi + DEG_90));
+		posY += FIXED_MUL(speed, fixedSin(phi + DEG_90));
 	}
 
-		if(current & kButtonA)
+	if(current & kButtonA)
 	{
-		posX += speed * cos(phi - M_PI/2);
-		posY += speed * sin(phi - M_PI/2);
+		posX += FIXED_MUL(speed, fixedCos(phi - DEG_90));
+		posY += FIXED_MUL(speed, fixedSin(phi - DEG_90));
 	}
 
-	posZ = pd->system->getCrankAngle() + 200.f;
-
+	posZ = FLOAT_TO_FIXED(pd->system->getCrankAngle()) + FLOAT_TO_FIXED(200.f);
 }
 
 static int update(void* userdata)
@@ -151,44 +189,42 @@ static int update(void* userdata)
 	pd->graphics->clear(kColorBlack);
 	uint8_t* frameBuffer = pd->graphics->getFrame();
 
-	float cosLeft = cos(phi + fov/2.f);
-	float sinLeft = sin(phi + fov/2.f);
-	float cosRight = cos(phi - fov/2.f);
-	float sinRight = sin(phi - fov/2.f);
-	float tanVFov = tan(vFov);
+	fixed_t cosLeft = fixedCos(phi + fov / 2);
+	fixed_t sinLeft = fixedSin(phi + fov / 2);
+	fixed_t cosRight = fixedCos(phi - fov / 2);
+	fixed_t sinRight = fixedSin(phi - fov / 2);
+	fixed_t tanVFov = FIXED_DIV(fixedSin(vFov), fixedCos(vFov));
 
 	for(uint32_t col = 0; col < LCD_COLUMNS; ++col)
 	{
 		heightPerColumn[col] = 0;
 	}
 
-	float dz = 1.f;
-	float z = 1.f;
+	fixed_t dz = FLOAT_TO_FIXED(1.f);
+	fixed_t z = FLOAT_TO_FIXED(1.f);
 	while(z < distance)
 	{
-		float pLeftX = posX + z * cosLeft;
-		float pLeftY = posY + z * sinLeft;
-		float pRightX = posX + z * cosRight;
-		float pRightY = posY + z * sinRight;
+		fixed_t pLeftX = posX + FIXED_MUL(z, cosLeft);
+		fixed_t pLeftY = posY + FIXED_MUL(z, sinLeft);
+		fixed_t pRightX = posX + FIXED_MUL(z, cosRight);
+		fixed_t pRightY = posY + FIXED_MUL(z, sinRight);
 
-		float dx = (pRightX - pLeftX)/LCD_COLUMNS;
-		float dy = (pRightY - pLeftY)/LCD_COLUMNS;
+		fixed_t dx = (pRightX - pLeftX)/LCD_COLUMNS;
+		fixed_t dy = (pRightY - pLeftY)/LCD_COLUMNS;
 
-		float hMin = posZ - z * tanVFov;
-		float hMax = posZ + z * tanVFov;
+		fixed_t hMin = posZ - FIXED_MUL(z, tanVFov);
+		fixed_t hMax = posZ + FIXED_MUL(z, tanVFov);
 
 		for(uint32_t col = 0; col < LCD_COLUMNS; ++col)
 		{
-			uint32_t leftX = (uint32_t)(pLeftX+0.5f)%1024;
+			uint32_t leftX = FIXED_TO_INT32(pLeftX)&1023;
 
-			uint32_t leftY = (uint32_t)(pLeftY+0.5f)%1024;
+			uint32_t leftY = FIXED_TO_INT32(pLeftY)&1023;
 			const uint8_t colorAndHeight = terrainData[leftX * 1024 + leftY];
 			const uint8_t color = (colorAndHeight & 0x7);
-			const float height = colorAndHeight & 0xF8;
-			//uint8_t heightOnScreen = MIN((height-posZ), 240);
-			float_t heightOnScreen = (height*scaleHeight - hMin)/(hMax - hMin) * 239.f;
-			heightOnScreen = MAX(MIN(heightOnScreen, 239.f), 0.f);
-			uint8_t heightOnScreen8 = heightOnScreen;
+			const fixed_t height = INT32_TO_FIXED(colorAndHeight & 0xF8);
+			fixed_t heightOnScreen = FIXED_MUL(FIXED_DIV(FIXED_MUL(height, scaleHeight) - hMin, (hMax - hMin)), INT32_TO_FIXED(239));
+			uint8_t heightOnScreen8 = MAX(MIN(FIXED_TO_INT32(heightOnScreen), 239), 0);
 
 			const uint16_t pattern = (patterns[color]) >> ((col&0b11)*4);
 
@@ -218,7 +254,7 @@ static int update(void* userdata)
 			pLeftY += dy;
 		}
 		z += dz;
-    dz += 0.2f;
+		dz += FLOAT_TO_FIXED(0.2f);
 	}
 
 	// Draw the current FPS on the screen
