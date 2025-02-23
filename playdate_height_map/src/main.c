@@ -61,6 +61,74 @@ static fixed_t fixedSin(angle_t angle)
 	return sin_lut[angle & LUT_MASK];
 }
 
+static inline void
+_drawMaskPattern(uint32_t* p, uint32_t mask, uint32_t color)
+{
+	if ( mask == 0xffffffff )
+		*p = color;
+	else
+		*p = (*p & ~mask) | (color & mask);
+}
+
+static void
+drawFragment(uint32_t* row, int x1, int x2, uint32_t color)
+{
+	if ( x2 < 0 || x1 >= LCD_COLUMNS )
+		return;
+	
+	if ( x1 < 0 )
+		x1 = 0;
+	
+	if ( x2 > LCD_COLUMNS )
+		x2 = LCD_COLUMNS;
+	
+	if ( x1 > x2 )
+		return;
+	
+	// Operate on 32 bits at a time
+	
+	int startbit = x1 % 32;
+	uint32_t startmask = swap((1 << (32 - startbit)) - 1);
+	int endbit = x2 % 32;
+	uint32_t endmask = swap(((1 << endbit) - 1) << (32 - endbit));
+	
+	int col = x1 / 32;
+	uint32_t* p = row + col;
+
+	if ( col == x2 / 32 )
+	{
+		uint32_t mask = 0;
+		
+		if ( startbit > 0 && endbit > 0 )
+			mask = startmask & endmask;
+		else if ( startbit > 0 )
+			mask = startmask;
+		else if ( endbit > 0 )
+			mask = endmask;
+		
+		_drawMaskPattern(p, mask, color);
+	}
+	else
+	{
+		int x = x1;
+		
+		if ( startbit > 0 )
+		{
+			_drawMaskPattern(p++, startmask, color);
+			x += (32 - startbit);
+		}
+		
+		while ( x + 32 <= x2 )
+		{
+			_drawMaskPattern(p++, 0xffffffff, color);
+			x += 32;
+		}
+		
+		if ( endbit > 0 )
+			_drawMaskPattern(p, endmask, color);
+	}
+}
+
 void initLut()
 {
 	for(int i = 0; i < LUT_SIZE; ++i)
@@ -197,9 +265,15 @@ static int update(void* userdata)
 	fixed_t sinRight = fixedSin(phi - fov / 2);
 	fixed_t tanVFov = FIXED_DIV(fixedSin(vFov), fixedCos(vFov));
 
+	fixed_t horizonMin = posZ - FIXED_MUL(distance, tanVFov);
+	fixed_t horizonMax = posZ + FIXED_MUL(distance, tanVFov);
+	fixed_t groundOnScreen = FIXED_MUL(FIXED_DIV(-horizonMin, (horizonMax - horizonMin)), INT32_TO_FIXED(239));
+	uint8_t groundOnScreen8 = MAX(MIN(FIXED_TO_INT32(groundOnScreen), 239), 0);
+	memset(frameBuffer + groundOnScreen8 * LCD_STRIDE, 0xFF, (240-groundOnScreen8)*LCD_STRIDE);
+
 	memset(heightPerColumn, 0, LCD_COLUMNS);
 
-	fixed_t dz = FLOAT_TO_FIXED(1.04f);
+	fixed_t dz = FLOAT_TO_FIXED(1.1f);
 	fixed_t z = FLOAT_TO_FIXED(1.f);
 	while(z < distance)
 	{
@@ -217,23 +291,10 @@ static int update(void* userdata)
 			for(uint32_t col = 0; col < LCD_COLUMNS; ++col)
 			{
 				uint32_t leftX = FIXED_TO_INT32(pLeftX)&1023;
-
 				uint32_t leftY = FIXED_TO_INT32(pLeftY)&1023;
-				const uint8_t colorAndHeight = terrainData[leftX * 1024 + leftY];
-				/*const*/ uint8_t color = (colorAndHeight & 0x7);
-				if(color > 3)
-				{
-					color = 3;
-				}
-				else
-				{
-					color = 0;
-				}
-				const fixed_t height = INT32_TO_FIXED(colorAndHeight & 0xF8);
-
-				leftX = (leftX+1)%1023;
-				const fixed_t height2 = INT32_TO_FIXED(terrainData[leftX * 1024 + leftY]& 0xF8);
-				color = (height2 < height ? 3 : 0);
+				const fixed_t height = FIXED_MUL(cos_lut[leftX] + sin_lut[leftY], INT32_TO_FIXED(128));
+				const fixed_t height2 = FIXED_MUL(cos_lut[(leftX+1)%1023] + sin_lut[leftY], INT32_TO_FIXED(128));
+				uint8_t color = (height2 < height? 3 : 0);
 
 				fixed_t heightOnScreen = FIXED_MUL(FIXED_DIV(FIXED_MUL(height, scaleHeight) - hMin, (hMax - hMin)), INT32_TO_FIXED(239));
 				uint8_t heightOnScreen8 = MAX(MIN(FIXED_TO_INT32(heightOnScreen), 239), 0);
@@ -251,7 +312,7 @@ static int update(void* userdata)
 						uint8_t* word = frameBuffer + h * LCD_STRIDE + (col/8);
 						if(bit)
 						{
-							SET_BIT(*word, offset);
+							//SET_BIT(*word, offset);
 						}
 						else
 						{
@@ -265,8 +326,6 @@ static int update(void* userdata)
 					uint8_t h = 240-heightPerColumn[col];
 					uint8_t* word = frameBuffer + h * LCD_STRIDE + (col/8);
 					UNSET_BIT(*word, offset);
-					word = frameBuffer + (h+1) * LCD_STRIDE + (col/8);
-					UNSET_BIT(*word, offset);
 				}
 
 				pLeftX += dx;
@@ -279,6 +338,13 @@ static int update(void* userdata)
 		/*z += dz;
 		dz += FLOAT_TO_FIXED(0.2f);*/
 		z = FIXED_MUL(z, dz);
+		if(z>distance)
+		{
+			for(uint8_t h = 240-heightOnScreen8; h < 240 - heightPerColumn[col]; ++h)
+			{
+				
+			}
+		}
 	}
 
 	// Draw the current FPS on the screen
