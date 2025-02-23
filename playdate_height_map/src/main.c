@@ -51,6 +51,8 @@ const fixed_t scaleHeight = FLOAT_TO_FIXED(1.5f);
 const fixed_t distance = FLOAT_TO_FIXED(1024.f);
 const fixed_t speed = FLOAT_TO_FIXED(5.f);
 
+fixed_t frameCount = 0;
+
 static fixed_t fixedCos(angle_t angle)
 {
 	return cos_lut[angle & LUT_MASK];
@@ -284,6 +286,35 @@ static inline void addToLine(uint8_t line, int col, uint32_t color)
 	}
 }
 
+static inline void baseWave(fixed_t pLeftX, fixed_t pLeftY, fixed_t* height, fixed_t* normal)
+{
+	uint32_t leftX = FIXED_TO_INT32(pLeftX+frameCount)&1023;
+	uint32_t leftY = FIXED_TO_INT32(pLeftY)&1023;
+
+	fixed_t _cos = cos_lut[leftX]+INT32_TO_FIXED(1);
+	fixed_t _sin = sin_lut[leftY]+INT32_TO_FIXED(1);
+	*height = FIXED_MUL(_cos + _sin, INT32_TO_FIXED(32));
+}
+
+static inline void rippleWave(fixed_t pLeftX, fixed_t pLeftY, fixed_t* height, fixed_t* normal)
+{
+	uint32_t leftX = FIXED_TO_INT32(pLeftX+3*frameCount)&1023;
+	uint32_t leftY = FIXED_TO_INT32(pLeftY+5*frameCount)&1023;
+
+	fixed_t _cos = cos_lut[leftX]+INT32_TO_FIXED(1);
+	fixed_t _sin = sin_lut[leftY]+INT32_TO_FIXED(1);
+	*height += FIXED_MUL(_cos + _sin, INT32_TO_FIXED(32));
+}
+
+static inline void computeHeight(fixed_t pLeftX, fixed_t pLeftY, fixed_t* height, fixed_t* normal)
+{
+	*height = 0;
+	*normal = 0;
+
+	baseWave(pLeftX, pLeftY, height, normal);
+	rippleWave(pLeftX, pLeftY, height, normal);
+}
+
 static int update(void* userdata)
 {
 	initLines();
@@ -321,10 +352,15 @@ static int update(void* userdata)
 
 			for(uint32_t col = 0; col < LCD_COLUMNS; ++col)
 			{
-				uint32_t leftX = FIXED_TO_INT32(pLeftX)&1023;
+				/*uint32_t leftX = FIXED_TO_INT32(pLeftX)&1023;
 				uint32_t leftY = FIXED_TO_INT32(pLeftY)&1023;
 				const fixed_t height = FIXED_MUL(cos_lut[leftX] + sin_lut[leftY], INT32_TO_FIXED(128));
-				const fixed_t height2 = FIXED_MUL(cos_lut[(leftX+1)%1023] + sin_lut[leftY], INT32_TO_FIXED(128));
+				const fixed_t height2 = FIXED_MUL(cos_lut[(leftX+1)%1023] + sin_lut[leftY], INT32_TO_FIXED(128));*/
+				const fixed_t height;
+				const fixed_t normal;
+				computeHeight(pLeftX, pLeftY, &height, &normal);
+				const fixed_t height2;
+				computeHeight(pLeftX+INT32_TO_FIXED(1), pLeftY, &height2, &normal);
 				uint8_t color = (height2 < height? 3 : 0);
 
 				fixed_t heightOnScreen = FIXED_MUL(FIXED_DIV(FIXED_MUL(height, scaleHeight) - hMin, (hMax - hMin)), INT32_TO_FIXED(239));
@@ -371,6 +407,8 @@ static int update(void* userdata)
 
 	// Draw the current FPS on the screen
 	pd->system->drawFPS(0, 0);
+
+	frameCount += INT32_TO_FIXED(1);
 
 	return 1;
 }
