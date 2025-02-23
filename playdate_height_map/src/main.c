@@ -24,6 +24,8 @@
 #define LCD_ROWS 240
 #define LCD_STRIDE 52
 
+uint8_t screenBuffer[LCD_COLUMNS * LCD_ROWS];
+
 static int update(void* userdata);
 uint8_t* terrainData;
 uint8_t* heightPerColumn;
@@ -195,12 +197,9 @@ static int update(void* userdata)
 	fixed_t sinRight = fixedSin(phi - fov / 2);
 	fixed_t tanVFov = FIXED_DIV(fixedSin(vFov), fixedCos(vFov));
 
-	for(uint32_t col = 0; col < LCD_COLUMNS; ++col)
-	{
-		heightPerColumn[col] = 0;
-	}
+	memset(heightPerColumn, 0, LCD_COLUMNS);
 
-	fixed_t dz = FLOAT_TO_FIXED(1.f);
+	fixed_t dz = FLOAT_TO_FIXED(1.04f);
 	fixed_t z = FLOAT_TO_FIXED(1.f);
 	while(z < distance)
 	{
@@ -215,46 +214,71 @@ static int update(void* userdata)
 		fixed_t hMin = posZ - FIXED_MUL(z, tanVFov);
 		fixed_t hMax = posZ + FIXED_MUL(z, tanVFov);
 
-		for(uint32_t col = 0; col < LCD_COLUMNS; ++col)
-		{
-			uint32_t leftX = FIXED_TO_INT32(pLeftX)&1023;
-
-			uint32_t leftY = FIXED_TO_INT32(pLeftY)&1023;
-			const uint8_t colorAndHeight = terrainData[leftX * 1024 + leftY];
-			const uint8_t color = (colorAndHeight & 0x7);
-			const fixed_t height = INT32_TO_FIXED(colorAndHeight & 0xF8);
-			fixed_t heightOnScreen = FIXED_MUL(FIXED_DIV(FIXED_MUL(height, scaleHeight) - hMin, (hMax - hMin)), INT32_TO_FIXED(239));
-			uint8_t heightOnScreen8 = MAX(MIN(FIXED_TO_INT32(heightOnScreen), 239), 0);
-
-			const uint16_t pattern = (patterns[color]) >> ((col&0b11)*4);
-
-			uint8_t offset = 7-(col%8);
-
-			if(heightPerColumn[col] < heightOnScreen8)
+			for(uint32_t col = 0; col < LCD_COLUMNS; ++col)
 			{
-				for(uint8_t h = 240-heightOnScreen8; h < 240 - heightPerColumn[col]; ++h)
+				uint32_t leftX = FIXED_TO_INT32(pLeftX)&1023;
+
+				uint32_t leftY = FIXED_TO_INT32(pLeftY)&1023;
+				const uint8_t colorAndHeight = terrainData[leftX * 1024 + leftY];
+				/*const*/ uint8_t color = (colorAndHeight & 0x7);
+				if(color > 3)
 				{
-					uint8_t offset2 = h&0b11;
-					uint8_t bit = pattern & (1 << offset2);
-					uint8_t* word = frameBuffer + h * LCD_STRIDE + (col/8);
-					if(bit)
-					{
-						SET_BIT(*word, offset);
-					}
-					else
-					{
-						UNSET_BIT(*word, offset);
-					}
+					color = 3;
 				}
-				heightPerColumn[col] = heightOnScreen8;
+				else
+				{
+					color = 0;
+				}
+				const fixed_t height = INT32_TO_FIXED(colorAndHeight & 0xF8);
+
+				leftX = (leftX+1)%1023;
+				const fixed_t height2 = INT32_TO_FIXED(terrainData[leftX * 1024 + leftY]& 0xF8);
+				color = (height2 < height ? 3 : 0);
+
+				fixed_t heightOnScreen = FIXED_MUL(FIXED_DIV(FIXED_MUL(height, scaleHeight) - hMin, (hMax - hMin)), INT32_TO_FIXED(239));
+				uint8_t heightOnScreen8 = MAX(MIN(FIXED_TO_INT32(heightOnScreen), 239), 0);
+
+				const uint16_t pattern = (patterns[color]) >> ((col&0b11)*4);
+
+				uint8_t offset = 7-(col%8);
+
+				if(heightPerColumn[col] <= heightOnScreen8)
+				{
+					for(uint8_t h = 240-heightOnScreen8; h < 240 - heightPerColumn[col]; ++h)
+					{
+						uint8_t offset2 = h&0b11;
+						uint8_t bit = pattern & (1 << offset2);
+						uint8_t* word = frameBuffer + h * LCD_STRIDE + (col/8);
+						if(bit)
+						{
+							SET_BIT(*word, offset);
+						}
+						else
+						{
+							UNSET_BIT(*word, offset);
+						}
+					}
+					heightPerColumn[col] = heightOnScreen8;
+				}
+				else
+				{
+					uint8_t h = 240-heightPerColumn[col];
+					uint8_t* word = frameBuffer + h * LCD_STRIDE + (col/8);
+					UNSET_BIT(*word, offset);
+					word = frameBuffer + (h+1) * LCD_STRIDE + (col/8);
+					UNSET_BIT(*word, offset);
+				}
+
+				pLeftX += dx;
+				pLeftY += dy;
 			}
 
 
-			pLeftX += dx;
-			pLeftY += dy;
-		}
-		z += dz;
-		dz += FLOAT_TO_FIXED(0.2f);
+
+
+		/*z += dz;
+		dz += FLOAT_TO_FIXED(0.2f);*/
+		z = FIXED_MUL(z, dz);
 	}
 
 	// Draw the current FPS on the screen
