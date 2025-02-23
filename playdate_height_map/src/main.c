@@ -61,6 +61,19 @@ static fixed_t fixedSin(angle_t angle)
 	return sin_lut[angle & LUT_MASK];
 }
 
+static inline uint32_t swap(uint32_t n)
+{
+#if TARGET_PLAYDATE
+	//return __REV(n);
+	uint32_t result;
+	
+	__asm volatile ("rev %0, %1" : "=l" (result) : "l" (n));
+	return(result);
+#else
+	return ((n & 0xff000000) >> 24) | ((n & 0xff0000) >> 8) | ((n & 0xff00) << 8) | (n << 24);
+#endif
+}
+
 static inline void
 _drawMaskPattern(uint32_t* p, uint32_t mask, uint32_t color)
 {
@@ -129,12 +142,12 @@ drawFragment(uint32_t* row, int x1, int x2, uint32_t color)
 	}
 }
 
-void initLut()
+void initLut(void)
 {
 	for(int i = 0; i < LUT_SIZE; ++i)
 	{
-		cos_lut[i] = FLOAT_TO_FIXED(cos(i / (float)LUT_SIZE * 2.f * M_PI));
-		sin_lut[i] = FLOAT_TO_FIXED(sin(i / (float)LUT_SIZE * 2.f * M_PI));
+		cos_lut[i] = FLOAT_TO_FIXED(cos(i / (float)LUT_SIZE * 2.f * (float)M_PI));
+		sin_lut[i] = FLOAT_TO_FIXED(sin(i / (float)LUT_SIZE * 2.f * (float)M_PI));
 	}
 }
 
@@ -175,7 +188,7 @@ int eventHandler(PlaydateAPI* pd, PDSystemEvent event, uint32_t arg)
 		heightPerColumn = pd->system->realloc(heightPerColumn, LCD_COLUMNS);
 
 		loadFile(pd);
-
+		pd->display->setRefreshRate(50.f);
 		// Note: If you set an update callback in the kEventInit handler, the system assumes the game is pure C and doesn't run any Lua code in the game
 		pd->system->setUpdateCallback(update, pd);
 	}
@@ -193,20 +206,6 @@ int eventHandler(PlaydateAPI* pd, PDSystemEvent event, uint32_t arg)
 
 #define SET_BIT(byte, offset) {(byte) = (byte) | (1  << (offset));}
 #define UNSET_BIT(byte, offset) {(byte) = (byte) & ~(1  << (offset));}
-
-static inline uint32_t swap(uint32_t n)
-{
-#if TARGET_PLAYDATE
-	//return __REV(n);
-	uint32_t result;
-	
-	__asm volatile ("rev %0, %1" : "=l" (result) : "l" (n));
-	return(result);
-#else
-	return ((n & 0xff000000) >> 24) | ((n & 0xff0000) >> 8) | ((n & 0xff00) << 8) | (n << 24);
-#endif
-}
-
 
 void checkButtons(PlaydateAPI* pd)
 {
@@ -249,8 +248,46 @@ void checkButtons(PlaydateAPI* pd)
 	posZ = FLOAT_TO_FIXED(pd->system->getCrankAngle()) + FLOAT_TO_FIXED(200.f);
 }
 
+struct Pattern
+{
+	uint32_t color;
+	uint32_t size;
+};
+struct Line
+{
+	uint8_t count;
+	struct Pattern patterns[50];
+};
+
+struct Line pending[240];
+
+static void initLines(void)
+{
+	for(int i = 0; i < 240; ++i)
+	{
+		pending[i].count = 0;
+	}
+}
+
+static inline void addToLine(uint8_t line, int col, uint32_t color)
+{
+	struct Line* currentLine = &pending[line];
+	if(col == 0 || currentLine->patterns[currentLine->count].color != color)
+	{
+		currentLine->patterns[currentLine->count].color = color;
+		currentLine->patterns[currentLine->count].size = 1;
+		currentLine->count++;
+	}
+	else
+	{
+		currentLine->patterns[currentLine->count-1].size++;
+	}
+}
+
 static int update(void* userdata)
 {
+	initLines();
+
 	static uint16_t patterns[] = {0xFFFF, 0x5F5F, 0x5E5B, 0x5A5A, 0xA1A4, 0xA0A0, 0x0000, 0x0000};
 
 	PlaydateAPI* pd = userdata;
@@ -264,12 +301,6 @@ static int update(void* userdata)
 	fixed_t cosRight = fixedCos(phi - fov / 2);
 	fixed_t sinRight = fixedSin(phi - fov / 2);
 	fixed_t tanVFov = FIXED_DIV(fixedSin(vFov), fixedCos(vFov));
-
-	fixed_t horizonMin = posZ - FIXED_MUL(distance, tanVFov);
-	fixed_t horizonMax = posZ + FIXED_MUL(distance, tanVFov);
-	fixed_t groundOnScreen = FIXED_MUL(FIXED_DIV(-horizonMin, (horizonMax - horizonMin)), INT32_TO_FIXED(239));
-	uint8_t groundOnScreen8 = MAX(MIN(FIXED_TO_INT32(groundOnScreen), 239), 0);
-	memset(frameBuffer + groundOnScreen8 * LCD_STRIDE, 0xFF, (240-groundOnScreen8)*LCD_STRIDE);
 
 	memset(heightPerColumn, 0, LCD_COLUMNS);
 
@@ -298,7 +329,7 @@ static int update(void* userdata)
 
 				fixed_t heightOnScreen = FIXED_MUL(FIXED_DIV(FIXED_MUL(height, scaleHeight) - hMin, (hMax - hMin)), INT32_TO_FIXED(239));
 				uint8_t heightOnScreen8 = MAX(MIN(FIXED_TO_INT32(heightOnScreen), 239), 0);
-
+				
 				const uint16_t pattern = (patterns[color]) >> ((col&0b11)*4);
 
 				uint8_t offset = 7-(col%8);
@@ -312,12 +343,13 @@ static int update(void* userdata)
 						uint8_t* word = frameBuffer + h * LCD_STRIDE + (col/8);
 						if(bit)
 						{
-							//SET_BIT(*word, offset);
+							SET_BIT(*word, offset);
 						}
 						else
 						{
 							UNSET_BIT(*word, offset);
 						}
+						//addToLine(h, col, color);
 					}
 					heightPerColumn[col] = heightOnScreen8;
 				}
@@ -326,6 +358,7 @@ static int update(void* userdata)
 					uint8_t h = 240-heightPerColumn[col];
 					uint8_t* word = frameBuffer + h * LCD_STRIDE + (col/8);
 					UNSET_BIT(*word, offset);
+					//addToLine(h, col, 0);
 				}
 
 				pLeftX += dx;
@@ -333,18 +366,7 @@ static int update(void* userdata)
 			}
 
 
-
-
-		/*z += dz;
-		dz += FLOAT_TO_FIXED(0.2f);*/
 		z = FIXED_MUL(z, dz);
-		if(z>distance)
-		{
-			for(uint8_t h = 240-heightOnScreen8; h < 240 - heightPerColumn[col]; ++h)
-			{
-				
-			}
-		}
 	}
 
 	// Draw the current FPS on the screen
