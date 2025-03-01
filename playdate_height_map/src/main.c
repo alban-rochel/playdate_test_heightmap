@@ -1,11 +1,3 @@
-//
-//  main.c
-//  Extension
-//
-//  Created by Dave Hayden on 7/30/14.
-//  Copyright (c) 2014 Panic, Inc. All rights reserved.
-//
-
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -24,9 +16,10 @@
 #define LCD_ROWS 240
 #define LCD_STRIDE 52
 
-uint8_t screenBuffer[LCD_COLUMNS * LCD_ROWS];
+//uint8_t screenBuffer[LCD_COLUMNS * LCD_ROWS];
 
 static int update(void* userdata);
+static int update2(void* userdata);
 uint8_t* terrainData;
 uint8_t* heightPerColumn;
 
@@ -250,81 +243,123 @@ void checkButtons(PlaydateAPI* pd)
 	posZ = FLOAT_TO_FIXED(pd->system->getCrankAngle()) + FLOAT_TO_FIXED(200.f);
 }
 
-struct Pattern
-{
-	uint32_t color;
-	uint32_t size;
-};
 struct Line
 {
-	uint8_t count;
-	struct Pattern patterns[50];
+	int32_t x;
+	uint32_t pattern;
 };
 
-struct Line pending[240];
+struct Line lines[240];
 
 static void initLines(void)
 {
 	for(int i = 0; i < 240; ++i)
 	{
-		pending[i].count = 0;
+		lines[i].x = -1;
+		lines[i].pattern = 0;
 	}
 }
 
-static inline void addToLine(uint8_t line, int col, uint32_t color)
+static inline void flushLines(uint32_t* frameBuffer)
 {
-	struct Line* currentLine = &pending[line];
-	if(col == 0 || currentLine->patterns[currentLine->count].color != color)
+	/*for(int i = 0; i < 240; ++i)
 	{
-		currentLine->patterns[currentLine->count].color = color;
-		currentLine->patterns[currentLine->count].size = 1;
-		currentLine->count++;
+		struct Line* currentLine = &lines[i];
+		if(currentLine->x >= 0)
+		{
+			uint32_t* row = frameBuffer + (i * LCD_STRIDE)/4;
+			drawFragment(row, currentLine->x, LCD_COLUMNS, currentLine->pattern);
+		}
+	}*/
+}
+
+static inline void addToLine(PlaydateAPI* pd, uint32_t* frameBuffer, uint8_t line, int col, uint32_t pattern)
+{
+	struct Line* currentLine = &lines[line];
+
+
+	if(currentLine->x < 0)
+	{
+		currentLine->x = col;
+		currentLine->pattern = pattern;
 	}
 	else
 	{
-		currentLine->patterns[currentLine->count-1].size++;
+		#if 1
+		if(currentLine->pattern != pattern)
+		{
+			uint32_t* row = frameBuffer + (line * LCD_STRIDE)/4;
+			if(line == 200)
+			{
+				pd->system->logToConsole("Change %d %d %d", col, currentLine->x, pattern);
+			}
+			drawFragment(row, currentLine->x, col, currentLine->pattern);
+			currentLine->x = col;
+			currentLine->pattern = pattern;
+		}
+		#else
+		{
+			uint32_t* row = frameBuffer + (line * LCD_STRIDE)/4;
+			drawFragment(row, col-1, col, pattern);
+		}
+		#endif
 	}
+
 }
 
-static inline void baseWave(fixed_t pLeftX, fixed_t pLeftY, fixed_t* height, fixed_t* normal)
+static inline void baseWave(fixed_t pLeftX, fixed_t pLeftY, fixed_t* height)
 {
-	uint32_t leftX = FIXED_TO_INT32(pLeftX+frameCount)&1023;
-	uint32_t leftY = FIXED_TO_INT32(pLeftY)&1023;
+	uint32_t leftX = FIXED_TO_INT32(pLeftX+10*frameCount)&1023;
+	uint32_t leftY = FIXED_TO_INT32(pLeftY+10*frameCount)&1023;
 
 	fixed_t _cos = cos_lut[leftX]+INT32_TO_FIXED(1);
 	fixed_t _sin = sin_lut[leftY]+INT32_TO_FIXED(1);
-	*height = FIXED_MUL(_cos + _sin, INT32_TO_FIXED(32));
+	*height = FIXED_MUL(_cos + _sin, INT32_TO_FIXED(3));
 }
 
-static inline void rippleWave(fixed_t pLeftX, fixed_t pLeftY, fixed_t* height, fixed_t* normal)
+static inline void rippleWave(fixed_t pLeftX, fixed_t pLeftY, fixed_t* height)
 {
 	uint32_t leftX = FIXED_TO_INT32(pLeftX+3*frameCount)&1023;
 	uint32_t leftY = FIXED_TO_INT32(pLeftY+5*frameCount)&1023;
 
 	fixed_t _cos = cos_lut[leftX]+INT32_TO_FIXED(1);
 	fixed_t _sin = sin_lut[leftY]+INT32_TO_FIXED(1);
-	*height += FIXED_MUL(_cos + _sin, INT32_TO_FIXED(32));
+	*height += FIXED_MUL(_cos + _sin, INT32_TO_FIXED(3));
 }
 
-static inline void computeHeight(fixed_t pLeftX, fixed_t pLeftY, fixed_t* height, fixed_t* normal)
+static inline void computeHeight(fixed_t pLeftX, fixed_t pLeftY, fixed_t* height, uint8_t* patternIndex)
 {
 	*height = 0;
-	*normal = 0;
 
-	baseWave(pLeftX, pLeftY, height, normal);
-	rippleWave(pLeftX, pLeftY, height, normal);
+	uint32_t leftX = FIXED_TO_INT32(pLeftX)&1023;
+	uint32_t leftY = FIXED_TO_INT32(pLeftY)&1023;
+	uint8_t heightAndColor = terrainData[leftX*1024+leftY];
+	if((heightAndColor >> 3) > 3)
+	{
+		*height = FIXED_MUL(heightAndColor & 0xF8, INT32_TO_FIXED(128));
+		*patternIndex = ((heightAndColor & 0x7) >= 3  ? 0 : 3);
+	}
+	else
+	{
+		baseWave(pLeftX, pLeftY, height);
+		rippleWave(pLeftX, pLeftY, height);
+		*patternIndex = 6;
+	}
+	//*pattern = ((heightAndColor & 0x7) >= 3  ? 0x5A5A5A5A : 0xFFFFFFFF);
+	/*baseWave(pLeftX, pLeftY, height);
+	rippleWave(pLeftX, pLeftY, height);*/
 }
 
 static int update(void* userdata)
 {
 	initLines();
 
-	static uint16_t patterns[] = {0xFFFF, 0x5F5F, 0x5E5B, 0x5A5A, 0xA1A4, 0xA0A0, 0x0000, 0x0000};
+	static uint16_t patterns[] = {0x0000, 0xA0A0, 0xA4A0, 0xA5A5, 0xFADA, 0xFAFA, 0xFFFF};
 
 	PlaydateAPI* pd = userdata;
 	checkButtons(pd);
 
-	pd->graphics->clear(kColorBlack);
+	pd->graphics->clear(kColorWhite);
 	uint8_t* frameBuffer = pd->graphics->getFrame();
 
 	fixed_t cosLeft = fixedCos(phi + fov / 2);
@@ -352,40 +387,34 @@ static int update(void* userdata)
 
 			for(uint32_t col = 0; col < LCD_COLUMNS; ++col)
 			{
-				/*uint32_t leftX = FIXED_TO_INT32(pLeftX)&1023;
-				uint32_t leftY = FIXED_TO_INT32(pLeftY)&1023;
-				const fixed_t height = FIXED_MUL(cos_lut[leftX] + sin_lut[leftY], INT32_TO_FIXED(128));
-				const fixed_t height2 = FIXED_MUL(cos_lut[(leftX+1)%1023] + sin_lut[leftY], INT32_TO_FIXED(128));*/
 				const fixed_t height;
 				const fixed_t normal;
-				computeHeight(pLeftX, pLeftY, &height, &normal);
-				const fixed_t height2;
-				computeHeight(pLeftX+INT32_TO_FIXED(1), pLeftY, &height2, &normal);
-				uint8_t color = (height2 < height? 3 : 0);
+				uint8_t patternIndex;
+				computeHeight(pLeftX, pLeftY, &height, &patternIndex);
+
+				uint16_t pattern = patterns[patternIndex];
+				pattern = pattern >> (4*(col%0b11));
 
 				fixed_t heightOnScreen = FIXED_MUL(FIXED_DIV(FIXED_MUL(height, scaleHeight) - hMin, (hMax - hMin)), INT32_TO_FIXED(239));
 				uint8_t heightOnScreen8 = MAX(MIN(FIXED_TO_INT32(heightOnScreen), 239), 0);
-				
-				const uint16_t pattern = (patterns[color]) >> ((col&0b11)*4);
-
-				uint8_t offset = 7-(col%8);
+				uint8_t colOffsetInByte = 7-col%8;
 
 				if(heightPerColumn[col] <= heightOnScreen8)
 				{
 					for(uint8_t h = 240-heightOnScreen8; h < 240 - heightPerColumn[col]; ++h)
 					{
-						uint8_t offset2 = h&0b11;
-						uint8_t bit = pattern & (1 << offset2);
+						uint8_t patternOffset = h&0b11;
+						uint8_t bit = (pattern >> patternOffset)&0x1;
 						uint8_t* word = frameBuffer + h * LCD_STRIDE + (col/8);
 						if(bit)
 						{
-							SET_BIT(*word, offset);
+							SET_BIT(*word, colOffsetInByte);
 						}
 						else
 						{
-							UNSET_BIT(*word, offset);
+							UNSET_BIT(*word, colOffsetInByte);
 						}
-						//addToLine(h, col, color);
+						//addToLine(pd, frameBuffer, h, col, pattern);
 					}
 					heightPerColumn[col] = heightOnScreen8;
 				}
@@ -393,8 +422,9 @@ static int update(void* userdata)
 				{
 					uint8_t h = 240-heightPerColumn[col];
 					uint8_t* word = frameBuffer + h * LCD_STRIDE + (col/8);
-					UNSET_BIT(*word, offset);
-					//addToLine(h, col, 0);
+					UNSET_BIT(*word, colOffsetInByte);
+					UNSET_BIT(*(word+52), colOffsetInByte);
+					//addToLine(pd, frameBuffer, h, col, 0);
 				}
 
 				pLeftX += dx;
@@ -405,10 +435,40 @@ static int update(void* userdata)
 		z = FIXED_MUL(z, dz);
 	}
 
+	flushLines(frameBuffer);
+
 	// Draw the current FPS on the screen
 	pd->system->drawFPS(0, 0);
 
 	frameCount += INT32_TO_FIXED(1);
+
+	return 1;
+}
+
+static int update2(void* userdata)
+{
+	initLines();
+
+	PlaydateAPI* pd = userdata;
+
+	pd->graphics->clear(kColorBlack);
+	uint8_t* frameBuffer = pd->graphics->getFrame();
+
+	for(int plop = 0; plop < 240; ++plop)
+	{
+		addToLine(pd, frameBuffer, plop, 0, 0xFFFFFFFF);
+		addToLine(pd, frameBuffer, plop, plop, 0x0);
+		addToLine(pd, frameBuffer, plop, plop+1, 0x0);
+		addToLine(pd, frameBuffer, plop, plop+2, 0x0);
+		addToLine(pd, frameBuffer, plop, plop+4, 0x0);
+		addToLine(pd, frameBuffer, plop, plop+5, 0xFFFFFFFF);
+		addToLine(pd, frameBuffer, plop, plop+6, 0x0);
+		addToLine(pd, frameBuffer, plop, plop+7, 0xFFFFFFFF);
+		addToLine(pd, frameBuffer, plop, plop+8, 0x0);
+		addToLine(pd, frameBuffer, plop, plop+9, 0xFF00FF00);
+	}
+
+	flushLines(frameBuffer);
 
 	return 1;
 }
