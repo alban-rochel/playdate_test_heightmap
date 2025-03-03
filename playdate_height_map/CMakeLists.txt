@@ -34,10 +34,13 @@ file(GLOB IMAGES
 	"Source/images/*"
 )
 
+# Add the display folder to the include path
+include_directories(${CMAKE_SOURCE_DIR}/display)
+
 if (TOOLCHAIN STREQUAL "armgcc")
-	add_executable(${PLAYDATE_GAME_DEVICE} src/main.c)
+	add_executable(${PLAYDATE_GAME_DEVICE} game/main.c display/display.c ${IMAGES})
 else()
-	add_library(${PLAYDATE_GAME_NAME} SHARED src/main.c ${IMAGES})
+	add_library(${PLAYDATE_GAME_NAME} SHARED game/main.c display/display.c ${IMAGES})
 endif()
 
 include(${SDK}/C_API/buildsupport/playdate_game.cmake)

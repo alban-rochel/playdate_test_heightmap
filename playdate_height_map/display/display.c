@@ -1,7 +1,11 @@
+#include "display.h"
+
+#ifdef EDITOR
 #include <stdio.h>
 #include <stdlib.h>
-
-#include "pd_api.h"
+#include <math.h>
+#include <string.h>
+#endif
 
 #define FIXED_POINT_SHIFT 8
 #define fixed_t int32_t
@@ -16,10 +20,6 @@
 #define LCD_ROWS 240
 #define LCD_STRIDE 52
 
-//uint8_t screenBuffer[LCD_COLUMNS * LCD_ROWS];
-
-static int update(void* userdata);
-static int update2(void* userdata);
 uint8_t* terrainData;
 uint8_t* heightPerColumn;
 
@@ -56,6 +56,7 @@ static fixed_t fixedSin(angle_t angle)
 	return sin_lut[angle & LUT_MASK];
 }
 
+#if 0
 static inline uint32_t swap(uint32_t n)
 {
 #if TARGET_PLAYDATE
@@ -68,7 +69,10 @@ static inline uint32_t swap(uint32_t n)
 	return ((n & 0xff000000) >> 24) | ((n & 0xff0000) >> 8) | ((n & 0xff00) << 8) | (n << 24);
 #endif
 }
+#endif
 
+
+#if 0
 static inline void
 _drawMaskPattern(uint32_t* p, uint32_t mask, uint32_t color)
 {
@@ -136,6 +140,7 @@ drawFragment(uint32_t* row, int x1, int x2, uint32_t color)
 			_drawMaskPattern(p, endmask, color);
 	}
 }
+#endif
 
 void initLut(void)
 {
@@ -146,50 +151,6 @@ void initLut(void)
 	}
 }
 
-void loadFile(PlaydateAPI* pd)
-{
-	pd->system->logToConsole("opening file");
-	SDFile* file = pd->file->open("./images/test.terrain", kFileRead);
-	if(file == NULL)
-	{
-		pd->system->logToConsole("Error open %s", pd->file->geterr());
-		return;
-	}
-	terrainData = pd->system->realloc(terrainData, 1024*1024);
-	if(terrainData == NULL)
-	{
-		pd->system->logToConsole("Error alloc");
-		return;
-	}
-
-	if(pd->file->read(file, terrainData, 1024*1024) < 0)
-	{
-		pd->system->logToConsole("Error read");
-		return;
-	}
-	pd->system->logToConsole("READ OK");
-}
-
-int eventHandler(PlaydateAPI* pd, PDSystemEvent event, uint32_t arg)
-{
-	(void)arg; // arg is currently only used for event = kEventKeyPressed
-
-	if ( event == kEventInit )
-	{
-		//const char* err;
-
-		initLut();
-
-		heightPerColumn = pd->system->realloc(heightPerColumn, LCD_COLUMNS);
-
-		loadFile(pd);
-		pd->display->setRefreshRate(50.f);
-		// Note: If you set an update callback in the kEventInit handler, the system assumes the game is pure C and doesn't run any Lua code in the game
-		pd->system->setUpdateCallback(update, pd);
-	}
-
-	return 0;
-}
 
 #if !defined(MIN)
 #define MIN(a, b) (((a)<(b))?(a):(b))
@@ -202,6 +163,8 @@ int eventHandler(PlaydateAPI* pd, PDSystemEvent event, uint32_t arg)
 #define SET_BIT(byte, offset) {(byte) = (byte) | (1  << (offset));}
 #define UNSET_BIT(byte, offset) {(byte) = (byte) & ~(1  << (offset));}
 
+#ifdef EDITOR
+#else
 void checkButtons(PlaydateAPI* pd)
 {
 	PDButtons pushed;
@@ -242,70 +205,7 @@ void checkButtons(PlaydateAPI* pd)
 
 	posZ = FLOAT_TO_FIXED(pd->system->getCrankAngle()) + FLOAT_TO_FIXED(200.f);
 }
-
-struct Line
-{
-	int32_t x;
-	uint32_t pattern;
-};
-
-struct Line lines[240];
-
-static void initLines(void)
-{
-	for(int i = 0; i < 240; ++i)
-	{
-		lines[i].x = -1;
-		lines[i].pattern = 0;
-	}
-}
-
-static inline void flushLines(uint32_t* frameBuffer)
-{
-	/*for(int i = 0; i < 240; ++i)
-	{
-		struct Line* currentLine = &lines[i];
-		if(currentLine->x >= 0)
-		{
-			uint32_t* row = frameBuffer + (i * LCD_STRIDE)/4;
-			drawFragment(row, currentLine->x, LCD_COLUMNS, currentLine->pattern);
-		}
-	}*/
-}
-
-static inline void addToLine(PlaydateAPI* pd, uint32_t* frameBuffer, uint8_t line, int col, uint32_t pattern)
-{
-	struct Line* currentLine = &lines[line];
-
-
-	if(currentLine->x < 0)
-	{
-		currentLine->x = col;
-		currentLine->pattern = pattern;
-	}
-	else
-	{
-		#if 1
-		if(currentLine->pattern != pattern)
-		{
-			uint32_t* row = frameBuffer + (line * LCD_STRIDE)/4;
-			if(line == 200)
-			{
-				pd->system->logToConsole("Change %d %d %d", col, currentLine->x, pattern);
-			}
-			drawFragment(row, currentLine->x, col, currentLine->pattern);
-			currentLine->x = col;
-			currentLine->pattern = pattern;
-		}
-		#else
-		{
-			uint32_t* row = frameBuffer + (line * LCD_STRIDE)/4;
-			drawFragment(row, col-1, col, pattern);
-		}
-		#endif
-	}
-
-}
+#endif
 
 static inline void baseWave(fixed_t pLeftX, fixed_t pLeftY, fixed_t* height)
 {
@@ -327,6 +227,34 @@ static inline void rippleWave(fixed_t pLeftX, fixed_t pLeftY, fixed_t* height)
 	*height += FIXED_MUL(_cos + _sin, INT32_TO_FIXED(3));
 }
 
+#ifdef EDITOR
+static inline void computeHeight(fixed_t pLeftX, fixed_t pLeftY, fixed_t* height, uint8_t* patternIndex)
+{
+	*height = 0;
+
+	uint32_t leftX = FIXED_TO_INT32(pLeftX)&1023;
+	uint32_t leftY = FIXED_TO_INT32(pLeftY)&1023;
+
+    uint32_t leftX2 = (FIXED_TO_INT32(pLeftX)+1)&1023;
+    uint32_t leftY2 = (FIXED_TO_INT32(pLeftY)+1)&1023;
+
+	*height = terrainData[leftX*1024+leftY];
+	uint8_t height_near = terrainData[leftX2*1024+leftY2];
+	if(*height > 3)
+	{
+		{
+            *patternIndex = (*height)/64 + 1;
+		}
+		*height = FIXED_MUL(*height, INT32_TO_FIXED(128));
+	}
+	else
+	{
+		baseWave(pLeftX, pLeftY, height);
+		rippleWave(pLeftX, pLeftY, height);
+		*patternIndex = 6;
+	}
+}
+#else
 static inline void computeHeight(fixed_t pLeftX, fixed_t pLeftY, fixed_t* height, uint8_t* patternIndex)
 {
 	*height = 0;
@@ -345,22 +273,12 @@ static inline void computeHeight(fixed_t pLeftX, fixed_t pLeftY, fixed_t* height
 		rippleWave(pLeftX, pLeftY, height);
 		*patternIndex = 6;
 	}
-	//*pattern = ((heightAndColor & 0x7) >= 3  ? 0x5A5A5A5A : 0xFFFFFFFF);
-	/*baseWave(pLeftX, pLeftY, height);
-	rippleWave(pLeftX, pLeftY, height);*/
 }
+#endif
 
-static int update(void* userdata)
+int draw(uint8_t* frameBuffer)
 {
-	initLines();
-
 	static uint16_t patterns[] = {0x0000, 0xA0A0, 0xA4A0, 0xA5A5, 0xFADA, 0xFAFA, 0xFFFF};
-
-	PlaydateAPI* pd = userdata;
-	checkButtons(pd);
-
-	pd->graphics->clear(kColorWhite);
-	uint8_t* frameBuffer = pd->graphics->getFrame();
 
 	fixed_t cosLeft = fixedCos(phi + fov / 2);
 	fixed_t sinLeft = fixedSin(phi + fov / 2);
@@ -369,7 +287,7 @@ static int update(void* userdata)
 	fixed_t tanVFov = FIXED_DIV(fixedSin(vFov), fixedCos(vFov));
 
 	memset(heightPerColumn, 0, LCD_COLUMNS);
-
+	
 	fixed_t dz = FLOAT_TO_FIXED(1.1f);
 	fixed_t z = FLOAT_TO_FIXED(1.f);
 	while(z < distance)
@@ -387,8 +305,7 @@ static int update(void* userdata)
 
 			for(uint32_t col = 0; col < LCD_COLUMNS; ++col)
 			{
-				const fixed_t height;
-				const fixed_t normal;
+                fixed_t height;
 				uint8_t patternIndex;
 				computeHeight(pLeftX, pLeftY, &height, &patternIndex);
 
@@ -435,42 +352,113 @@ static int update(void* userdata)
 		z = FIXED_MUL(z, dz);
 	}
 
-	flushLines(frameBuffer);
-
-	// Draw the current FPS on the screen
-	pd->system->drawFPS(0, 0);
-
 	frameCount += INT32_TO_FIXED(1);
 
 	return 1;
 }
 
-static int update2(void* userdata)
+#ifdef EDITOR
+
+void setTerrainData(uint8_t* data)
 {
-	initLines();
-
-	PlaydateAPI* pd = userdata;
-
-	pd->graphics->clear(kColorBlack);
-	uint8_t* frameBuffer = pd->graphics->getFrame();
-
-	for(int plop = 0; plop < 240; ++plop)
-	{
-		addToLine(pd, frameBuffer, plop, 0, 0xFFFFFFFF);
-		addToLine(pd, frameBuffer, plop, plop, 0x0);
-		addToLine(pd, frameBuffer, plop, plop+1, 0x0);
-		addToLine(pd, frameBuffer, plop, plop+2, 0x0);
-		addToLine(pd, frameBuffer, plop, plop+4, 0x0);
-		addToLine(pd, frameBuffer, plop, plop+5, 0xFFFFFFFF);
-		addToLine(pd, frameBuffer, plop, plop+6, 0x0);
-		addToLine(pd, frameBuffer, plop, plop+7, 0xFFFFFFFF);
-		addToLine(pd, frameBuffer, plop, plop+8, 0x0);
-		addToLine(pd, frameBuffer, plop, plop+9, 0xFF00FF00);
-	}
-
-	flushLines(frameBuffer);
-
-	return 1;
+	memcpy(terrainData, data, 1024*1024);
 }
 
+void loadTerrain(void)
+{
+	terrainData = (uint8_t*)malloc(1024*1024);
+	memset(terrainData, 0, 1024*1024);
 
+	FILE *file = fopen("/home/perso/dev_playdate/playdate_test_heightmap/playdate_height_map/Source/images/test.terrain", "rb");  // Open the binary file in read-binary mode
+  if (file == NULL) {
+      perror("Error opening file");
+      return ;
+  }
+
+	size_t bytesRead = fread(terrainData, 1, 1024*1024, file);
+  if (bytesRead != 1024*1024) {
+    if (feof(file)) {
+        printf("End of file reached\n");
+    } else {
+        perror("Error reading file");
+    }
+  }
+
+	fclose(file);
+}
+
+void initDisplay(void)
+{
+	initLut();
+    heightPerColumn = (uint8_t*)malloc(LCD_COLUMNS);
+	loadTerrain();
+}
+
+void upPushed(void)
+{
+	posX += FIXED_MUL(speed, fixedCos(phi));
+	posY += FIXED_MUL(speed, fixedSin(phi));
+}
+
+void downPushed(void)
+{
+	posX -= FIXED_MUL(speed, fixedCos(phi));
+	posY -= FIXED_MUL(speed, fixedSin(phi));	
+}
+
+void leftPushed(void)
+{
+	phi+=FLOAT_TO_FIXED(.1f);
+}
+
+void rightPushed(void)
+{
+	phi-=FLOAT_TO_FIXED(.1f);
+}
+
+void aPushed(void)
+{
+	posX += FIXED_MUL(speed, fixedCos(phi - DEG_90));
+	posY += FIXED_MUL(speed, fixedSin(phi - DEG_90));
+}
+
+void bPushed(void)
+{
+	posX += FIXED_MUL(speed, fixedCos(phi + DEG_90));
+	posY += FIXED_MUL(speed, fixedSin(phi + DEG_90));
+}
+#else
+
+void loadFile(PlaydateAPI* pd)
+{
+    pd->system->logToConsole("opening file");
+    SDFile* file = pd->file->open("./images/test.terrain", kFileRead);
+    if(file == NULL)
+    {
+        pd->system->logToConsole("Error open %s", pd->file->geterr());
+        return;
+    }
+    terrainData = pd->system->realloc(terrainData, 1024*1024);
+    if(terrainData == NULL)
+    {
+        pd->system->logToConsole("Error alloc");
+        return;
+    }
+
+    if(pd->file->read(file, terrainData, 1024*1024) < 0)
+    {
+        pd->system->logToConsole("Error read");
+        return;
+    }
+    pd->system->logToConsole("READ OK");
+}
+
+void initDisplay(PlaydateAPI* pd)
+{
+  initLut();
+
+  heightPerColumn = pd->system->realloc(heightPerColumn, LCD_COLUMNS);
+
+  loadFile(pd);
+}
+#endif
